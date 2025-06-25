@@ -49,19 +49,21 @@ def chatgpt_proxy():
         subprocess.run(ffmpeg_cmd, check=True)
         app.logger.info(f"ffmpeg conversion complete: {dst.name}")
 
-        # Whisper文字起こし
-        with open(dst.name, "rb") as converted_audio:
-            transcript = openai.audio.transcriptions.create(
-                model="whisper-1",
-                file=converted_audio,
-                response_format="text"
-            )
-        user_text = transcript
-        app.logger.info(f"Whisper transcript: {user_text}")
-
-    except Exception as e:
-        app.logger.exception(f"Whisper API or ffmpeg error: {e}")
-        return jsonify({"error": f"Whisper API error: {str(e)}"}), 500
+        # Whisper文字起こし（ここから新しいロギング＆エラー処理）
+        app.logger.info(f"ffmpeg変換ファイルをWhisper APIに送信: {dst.name}")
+        try:
+            with open(dst.name, "rb") as converted_audio:
+                transcript = openai.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=converted_audio,
+                    response_format="text"
+                )
+            app.logger.info(f"Whisper API transcript: {transcript}")
+            user_text = transcript
+        except Exception as e:
+            app.logger.exception(f"Whisper APIで例外発生: {e}")
+            return jsonify({"error": f"Whisper API error: {str(e)}"}), 500
+            
     finally:
         # cleanup
         try:
