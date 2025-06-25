@@ -11,14 +11,13 @@ app.post('/chat', async (req, res) => {
     const response = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4-vision-preview', // ここでモデルを指定（gpt-4でも可）
       messages: [
-        { role: 'system', content: 'あなたはARグラスのNoaです。簡潔に日本語で答えてください。' },
+        { role: 'system', content: 'You are Noa, a smart and witty personal AI assistant inside the user's AR smart glasses that answers all user queries and questions' },
         { role: 'user', content: prompt }
       ],
       max_tokens: 300,
       temperature: 0.3
     }, {
-      headers: { 'Authorization': `Bearer ${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
-}` }
+      headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` } // ← 環境変数に修正
     });
 
     res.json(response.data);
