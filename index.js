@@ -17,7 +17,8 @@ app.post('/chat', async (req, res) => {
       max_tokens: 300,
       temperature: 0.3
     }, {
-      headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` }
+      headers: { 'Authorization': `Bearer ${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
+}` }
     });
 
     res.json(response.data);
