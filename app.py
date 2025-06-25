@@ -14,12 +14,16 @@ def index():
 
 @app.route("/", methods=["POST"])
 def chatgpt_proxy():
+    app.logger.info("=== New request received ===")
     audio_file = request.files.get("audio")
     if audio_file is None:
+        app.logger.error("No audio file provided")
         return jsonify({"error": "No audio file provided"}), 400
 
     system_prompt = request.form.get("noa_system_prompt", "")
     messages_json = request.form.get("messages", "[]")
+    app.logger.info(f"System prompt: {system_prompt}")
+    app.logger.info(f"messages_json: {messages_json}")
 
     src = dst = None
     try:
@@ -27,18 +31,23 @@ def chatgpt_proxy():
         src = tempfile.NamedTemporaryFile(delete=False, suffix=".input")
         audio_file.save(src.name)
         src.close()
+        app.logger.info(f"Audio saved to temp file: {src.name}")
 
         dst = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         dst.close()
+        app.logger.info(f"Preparing converted file: {dst.name}")
 
         # ffmpeg変換
-        subprocess.run([
+        ffmpeg_cmd = [
             "ffmpeg", "-y",
             "-i", src.name,
             "-ar", "16000",
             "-ac", "1",
             dst.name
-        ], check=True)
+        ]
+        app.logger.info(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
+        subprocess.run(ffmpeg_cmd, check=True)
+        app.logger.info(f"ffmpeg conversion complete: {dst.name}")
 
         # Whisper文字起こし
         with open(dst.name, "rb") as converted_audio:
@@ -48,15 +57,19 @@ def chatgpt_proxy():
                 response_format="text"
             )
         user_text = transcript
+        app.logger.info(f"Whisper transcript: {user_text}")
+
     except Exception as e:
+        app.logger.exception(f"Whisper API or ffmpeg error: {e}")
         return jsonify({"error": f"Whisper API error: {str(e)}"}), 500
     finally:
         # cleanup
         try:
             if src: os.unlink(src.name)
             if dst: os.unlink(dst.name)
-        except Exception:
-            pass
+            app.logger.info("Temp files cleaned up.")
+        except Exception as cleanup_e:
+            app.logger.error(f"Cleanup error: {cleanup_e}")
 
     # ChatGPTへのメッセージ作成
     messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
@@ -65,10 +78,13 @@ def chatgpt_proxy():
         for msg in history:
             if msg.get("role") and msg.get("content"):
                 messages.append({"role": msg["role"], "content": msg["content"]})
+        app.logger.info(f"ChatGPT messages history: {messages}")
     except json.JSONDecodeError as e:
+        app.logger.exception(f"JSON decode error: {e}")
         return jsonify({"error": "Invalid JSON in messages"}), 400
 
     messages.append({"role": "user", "content": user_text})
+    app.logger.info(f"Final messages to ChatGPT: {messages}")
 
     try:
         chat_response = openai.chat.completions.create(
@@ -76,9 +92,12 @@ def chatgpt_proxy():
             messages=messages
         )
         answer_text = chat_response.choices[0].message.content
+        app.logger.info(f"ChatGPT response: {answer_text}")
     except Exception as e:
+        app.logger.exception(f"OpenAI API error: {e}")
         return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
+    app.logger.info("Returning response to Noa/Frame.")
     return jsonify({
         "reply": answer_text,
         "display_text": answer_text,
