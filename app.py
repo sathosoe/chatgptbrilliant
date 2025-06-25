@@ -1,53 +1,67 @@
-# requirements: flask, openai, python-dotenv (for loading API key from .env)
 from flask import Flask, request, jsonify
-import openai, os
+import openai, os, json
 
-openai.api_key = os.getenv("OPENAI_API_KEY")  # 環境変数にOpenAI APIキーを設定しておく
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = Flask(__name__)
 
+@app.route("/", methods=["GET"])
+def index():
+    return "Server is up and running!"
+
 @app.route("/", methods=["POST"])
 def chatgpt_proxy():
-    # Noaアプリから送信された音声ファイルとフォームデータを取得
+    app.logger.info("Received POST request")
+    
+    # 音声ファイルの取得
     audio_file = request.files.get("audio")
     if audio_file is None:
-        return "No audio file provided", 400
-    # 必要なら履歴やシステムプロンプトも取得
-    system_prompt = request.form.get("noa_system_prompt", "")  # Noaのシステムプロンプト
-    messages_json = request.form.get("messages")  # 過去のメッセージ履歴(JSON文字列)
-    # Whisper APIで音声 -> テキスト変換
+        app.logger.error("No audio file provided")
+        return jsonify({"error": "No audio file provided"}), 400
+    else:
+        app.logger.info(f"Received audio file: {audio_file.filename}")
+
+    # フォームデータ取得
+    system_prompt = request.form.get("noa_system_prompt", "")
+    messages_json = request.form.get("messages", "[]")
+
+    app.logger.info(f"System Prompt: {system_prompt}")
+    app.logger.info(f"Messages JSON: {messages_json}")
+
+    # Whisperで音声からテキストに変換
     try:
         transcript = openai.Audio.transcribe("whisper-1", audio_file)
+        user_text = transcript["text"] if isinstance(transcript, dict) else transcript
+        app.logger.info(f"Whisper transcript: {user_text}")
     except Exception as e:
-        return f"Whisper API error: {e}", 500
-    user_text = transcript["text"] if isinstance(transcript, dict) and "text" in transcript else transcript
+        app.logger.exception(f"Whisper API error: {e}")
+        return jsonify({"error": f"Whisper API error: {str(e)}"}), 500
 
-    # ChatGPTへのメッセージ構築
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    if messages_json:
-        try:
-            import json
-            history = json.loads(messages_json)
-            # 履歴は NoaMessage オブジェクトのリスト。roleとcontentを持つ想定で取り出す
-            for msg in history:
-                if msg.get("role") and msg.get("content"):
-                    messages.append({"role": msg["role"], "content": msg["content"]})
-        except json.JSONDecodeError:
-            pass
-    # 最後に今回のユーザー発話を追加
+    # ChatGPTへのメッセージ作成
+    messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
+    try:
+        history = json.loads(messages_json)
+        for msg in history:
+            if msg.get("role") and msg.get("content"):
+                messages.append({"role": msg["role"], "content": msg["content"]})
+        app.logger.info(f"ChatGPT messages history: {messages}")
+    except json.JSONDecodeError as e:
+        app.logger.exception(f"JSON decode error: {e}")
+        return jsonify({"error": "Invalid JSON in messages"}), 400
+
     messages.append({"role": "user", "content": user_text})
 
-    # ChatGPT (GPT-4) API呼び出し
+    # ChatGPTにリクエストを送信
     try:
-        chat_response = openai.ChatCompletion.create(model="gpt-4", messages=messages)
+        chat_response = openai.ChatCompletion.create(model="gpt-4o", messages=messages)
+        answer_text = chat_response["choices"][0]["message"]["content"]
+        app.logger.info(f"ChatGPT response: {answer_text}")
     except Exception as e:
-        return f"OpenAI API error: {e}", 500
-    # 回答テキストを取得
-    answer_text = chat_response["choices"][0]["message"]["content"]
+        app.logger.exception(f"OpenAI API error: {e}")
+        return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
-    # 必要なら音声合成（TTS）がオンかを確認し、フラグを含める（ここでは省略）
-
-    # JSON形式で応答（回答テキストを返す）
     return jsonify({"reply": answer_text})
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=True)
