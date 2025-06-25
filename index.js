@@ -1,62 +1,47 @@
-const express = require("express");
-const axios = require("axios");
-const cors = require("cors");
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
+const port = process.env.PORT || 3000;
+
 app.use(express.json());
 app.use(cors());
 
-// OpenAI APIキーを設定（Render.comの環境変数に設定済み）
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-app.post("/chat", async (req, res) => {
-  const userPrompt = req.body.prompt;
-
+app.post('/chat', async (req, res) => {
   try {
-    const response = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content: "あなたはスマートグラス内のAIアシスタントNoaです。",
-          },
-          {
-            role: "user",
-            content: userPrompt,
-          },
-        ],
-        max_tokens: 300,
-        temperature: 0.3,
-      },
-      {
-        headers: {
-          "Authorization": `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    const userPrompt = req.body.prompt || req.body.messages?.[0]?.content;
+    
+    if (!userPrompt) {
+      return res.status(400).json({ error: 'Prompt is missing or null.' });
+    }
 
-    // Noaが想定する形式に合わせる
+    const openAIResponse = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: 'You are Noa, a smart and witty personal AI assistant inside the user\'s AR smart glasses that answers all user queries and questions.' },
+        { role: 'user', content: userPrompt }
+      ],
+      max_tokens: 300,
+      temperature: 0.3
+    }, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
     res.json({
-      topic_changed: false,
-      content: response.data.choices[0].message.content
+      reply: openAIResponse.data.choices[0].message.content
     });
 
   } catch (error) {
-    console.error("Error:", error.response ? error.response.data : error.message);
-    res.status(500).json({
-      topic_changed: false,
-      content: "申し訳ありません。エラーが発生しました。"
-    });
+    console.error('OpenAI API Error:', error.response ? error.response.data : error.message);
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
-// サーバの起動ポートを環境変数または10000で指定
-const PORT = process.env.PORT || 10000;
-
-app.listen(PORT, () => {
-  console.log(`サーバが起動しました。ポート番号: ${PORT}`);
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
 });
