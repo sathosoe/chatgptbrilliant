@@ -2,10 +2,10 @@
 """
 Frame ✕ Noa ✕ OpenAI 連携用サーバ
   1. Noa から multipart/form-data で audio / messages / noa_system_prompt が届く
-  2. 必要に応じ ffmpeg で 16kHz mono WAV へ変換
+  2. 必要に応じ ffmpeg で 16 kHz mono WAV へ変換
   3. Whisper (whisper‑1 または gpt‑4o‑transcribe) で文字起こし
   4. ChatGPT (gpt‑4 など) で応答生成
-  5. JSON を返却 (Frame SDK: reply / display_text / reply_audio / topic_changed)
+  5. JSON を返却 (Frame SDK が期待するキー: reply / displayText / replyAudio / topicChanged)
 """
 import json, os, subprocess, tempfile, logging
 from flask import Flask, request, jsonify
@@ -39,7 +39,7 @@ def noa_proxy():
     with tempfile.NamedTemporaryFile(suffix=".input", delete=False) as src:
         audio_file.save(src.name)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as dst:
-        pass    # dst だけ確保
+        pass  # dst だけ確保
 
     ffmpeg_cmd = [
         "ffmpeg", "-y", "-i", src.name,
@@ -86,18 +86,26 @@ def noa_proxy():
             model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
             messages=messages
         )
-        answer = chat_resp.choices[0].message.content
+        # --- ChatGPT 応答を得たあと ---------------------------------------
+        answer = chat_resp.choices[0].message.content.strip()
         log.info("Answer: %s", answer[:120])
     except Exception as e:
         log.exception("ChatCompletion error")
         return jsonify(error=f"Chat API: {e}"), 500
 
-    # 5) Frame 形式で返却 ---------------------------------------------------
-    return jsonify(
-        reply=answer,
-        display_text=answer,
-        reply_audio=None,
-        topic_changed=False
+    # 5) Frame 形式で返却（キャメルケース 4 キー + Content-Type 固定） ------
+    response_body = {
+        "reply": answer,
+        "displayText": answer,
+        "replyAudio": None,    # TTS を付ける場合は URL か base64 をここに
+        "topicChanged": False
+    }
+    log.info("Returning JSON: %s", response_body)
+
+    return (
+        json.dumps(response_body, ensure_ascii=False),
+        200,
+        {"Content-Type": "application/json"}
     )
 
 if __name__ == "__main__":
