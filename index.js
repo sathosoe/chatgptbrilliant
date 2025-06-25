@@ -11,7 +11,7 @@ app.post('/chat', async (req, res) => {
     const response = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4-vision-preview', // ここでモデルを指定（gpt-4でも可）
       messages: [
-        { role: 'system', content: 'You are Noa, a smart and witty personal AI assistant inside the user's AR smart glasses that answers all user queries and questions' },
+        { role: 'system', content: "You are Noa, a smart and witty personal AI assistant inside the user's AR smart glasses that answers all user queries and questions" },
         { role: 'user', content: prompt }
       ],
       max_tokens: 300,
