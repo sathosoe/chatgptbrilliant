@@ -1,5 +1,7 @@
 from flask import Flask, request, jsonify
-import openai, os, json
+import openai
+import os
+import json
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -12,7 +14,7 @@ def index():
 @app.route("/", methods=["POST"])
 def chatgpt_proxy():
     app.logger.info("Received POST request")
-    
+
     # 音声ファイルの取得
     audio_file = request.files.get("audio")
     if audio_file is None:
@@ -28,10 +30,14 @@ def chatgpt_proxy():
     app.logger.info(f"System Prompt: {system_prompt}")
     app.logger.info(f"Messages JSON: {messages_json}")
 
-    # Whisperで音声からテキストに変換
+    # Whisperで音声からテキストに変換（新API）
     try:
-        transcript = openai.Audio.transcribe("whisper-1", audio_file)
-        user_text = transcript["text"] if isinstance(transcript, dict) else transcript
+        transcript = openai.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="text"
+        )
+        user_text = transcript  # response_format="text"の場合は文字列
         app.logger.info(f"Whisper transcript: {user_text}")
     except Exception as e:
         app.logger.exception(f"Whisper API error: {e}")
@@ -51,10 +57,13 @@ def chatgpt_proxy():
 
     messages.append({"role": "user", "content": user_text})
 
-    # ChatGPTにリクエストを送信
+    # ChatGPTにリクエストを送信（新API）
     try:
-        chat_response = openai.ChatCompletion.create(model="gpt-4o", messages=messages)
-        answer_text = chat_response["choices"][0]["message"]["content"]
+        chat_response = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=messages
+        )
+        answer_text = chat_response.choices[0].message.content
         app.logger.info(f"ChatGPT response: {answer_text}")
     except Exception as e:
         app.logger.exception(f"OpenAI API error: {e}")
