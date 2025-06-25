@@ -1,112 +1,105 @@
+#!/usr/bin/env python3
+"""
+Frame ✕ Noa ✕ OpenAI 連携用サーバ
+  1. Noa から multipart/form-data で audio / messages / noa_system_prompt が届く
+  2. 必要に応じ ffmpeg で 16kHz mono WAV へ変換
+  3. Whisper (whisper‑1 または gpt‑4o‑transcribe) で文字起こし
+  4. ChatGPT (gpt‑4 など) で応答生成
+  5. JSON を返却 (Frame SDK: reply / display_text / reply_audio / topic_changed)
+"""
+import json, os, subprocess, tempfile, logging
 from flask import Flask, request, jsonify
-import openai
-import os
-import json
-import tempfile
-import subprocess
+from openai import OpenAI
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# ---------- OpenAI 初期化 ----------
+client = OpenAI()                         # OPENAI_API_KEY は環境変数で読む
+
+# ---------- Flask ----------
 app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
 
 @app.route("/", methods=["GET"])
-def index():
-    return "Server is up and running!"
+def healthcheck():
+    return "OK"
 
 @app.route("/", methods=["POST"])
-def chatgpt_proxy():
-    app.logger.info("=== New request received ===")
+def noa_proxy():
+    log = app.logger
+    log.info("=== New request ===")
+
+    # 1) 受信 ---------------------------------------------------------------
     audio_file = request.files.get("audio")
     if audio_file is None:
-        app.logger.error("No audio file provided")
-        return jsonify({"error": "No audio file provided"}), 400
+        return jsonify(error="No audio field"), 400
 
     system_prompt = request.form.get("noa_system_prompt", "")
-    messages_json = request.form.get("messages", "[]")
-    app.logger.info(f"System prompt: {system_prompt}")
-    app.logger.info(f"messages_json: {messages_json}")
+    history_json = request.form.get("messages", "[]")
 
-    src = dst = None
-    try:
-        # 一時ファイルへ保存
-        src = tempfile.NamedTemporaryFile(delete=False, suffix=".input")
+    # 2) 一時ファイル保存 & ffmpeg ------------------------------------------
+    with tempfile.NamedTemporaryFile(suffix=".input", delete=False) as src:
         audio_file.save(src.name)
-        src.close()
-        app.logger.info(f"Audio saved to temp file: {src.name}")
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as dst:
+        pass    # dst だけ確保
 
-        dst = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-        dst.close()
-        app.logger.info(f"Preparing converted file: {dst.name}")
+    ffmpeg_cmd = [
+        "ffmpeg", "-y", "-i", src.name,
+        "-ar", "16000", "-ac", "1", dst.name
+    ]
+    log.info("ffmpeg: %s", " ".join(ffmpeg_cmd))
+    try:
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        log.error("ffmpeg error: %s", e.stderr.decode()[:200])
+        return jsonify(error="ffmpeg failed"), 500
 
-        # ffmpeg変換
-        ffmpeg_cmd = [
-            "ffmpeg", "-y",
-            "-i", src.name,
-            "-ar", "16000",
-            "-ac", "1",
-            dst.name
-        ]
-        app.logger.info(f"Running ffmpeg command: {' '.join(ffmpeg_cmd)}")
-        subprocess.run(ffmpeg_cmd, check=True)
-        app.logger.info(f"ffmpeg conversion complete: {dst.name}")
-
-        # Whisper文字起こし（ここから新しいロギング＆エラー処理）
-        app.logger.info(f"ffmpeg変換ファイルをWhisper APIに送信: {dst.name}")
-        try:
-            with open(dst.name, "rb") as converted_audio:
-                transcript = openai.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=converted_audio,
-                    response_format="text"
-                )
-            app.logger.info(f"Whisper API transcript: {transcript}")
-            user_text = transcript
-        except Exception as e:
-            app.logger.exception(f"Whisper APIで例外発生: {e}")
-            return jsonify({"error": f"Whisper API error: {str(e)}"}), 500
-            
+    # 3) Whisper -----------------------------------------------------------
+    try:
+        with open(dst.name, "rb") as wav:
+            transcript_text = client.audio.transcriptions.create(
+                model=os.getenv("WHISPER_MODEL", "whisper-1"),
+                file=wav,
+                response_format="text"
+            )
+        log.info("Transcript: %s", transcript_text[:120])
+    except Exception as e:
+        log.exception("Whisper API error")
+        return jsonify(error=f"Whisper API: {e}"), 500
     finally:
-        # cleanup
-        try:
-            if src: os.unlink(src.name)
-            if dst: os.unlink(dst.name)
-            app.logger.info("Temp files cleaned up.")
-        except Exception as cleanup_e:
-            app.logger.error(f"Cleanup error: {cleanup_e}")
+        os.unlink(src.name); os.unlink(dst.name)   # ゴミ掃除
 
-    # ChatGPTへのメッセージ作成
-    messages = [{"role": "system", "content": system_prompt}] if system_prompt else []
-    try:
-        history = json.loads(messages_json)
-        for msg in history:
-            if msg.get("role") and msg.get("content"):
-                messages.append({"role": msg["role"], "content": msg["content"]})
-        app.logger.info(f"ChatGPT messages history: {messages}")
-    except json.JSONDecodeError as e:
-        app.logger.exception(f"JSON decode error: {e}")
-        return jsonify({"error": "Invalid JSON in messages"}), 400
-
-    messages.append({"role": "user", "content": user_text})
-    app.logger.info(f"Final messages to ChatGPT: {messages}")
+    # 4) ChatGPT -----------------------------------------------------------
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
 
     try:
-        chat_response = openai.chat.completions.create(
-            model="gpt-4o",
+        for m in json.loads(history_json):
+            if all(k in m for k in ("role", "content")):
+                messages.append({"role": m["role"], "content": m["content"]})
+    except json.JSONDecodeError:
+        log.warning("messages JSON parse error — 無視して続行")
+
+    messages.append({"role": "user", "content": transcript_text})
+
+    try:
+        chat_resp = client.chat.completions.create(
+            model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
             messages=messages
         )
-        answer_text = chat_response.choices[0].message.content
-        app.logger.info(f"ChatGPT response: {answer_text}")
+        answer = chat_resp.choices[0].message.content
+        log.info("Answer: %s", answer[:120])
     except Exception as e:
-        app.logger.exception(f"OpenAI API error: {e}")
-        return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
+        log.exception("ChatCompletion error")
+        return jsonify(error=f"Chat API: {e}"), 500
 
-    app.logger.info("Returning response to Noa/Frame.")
-    return jsonify({
-        "reply": answer_text,
-        "display_text": answer_text,
-        "reply_audio": None,
-        "topic_changed": False
-    })
+    # 5) Frame 形式で返却 ---------------------------------------------------
+    return jsonify(
+        reply=answer,
+        display_text=answer,
+        reply_audio=None,
+        topic_changed=False
+    )
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False)
