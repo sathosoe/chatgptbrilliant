@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-import openai, os, json
+import openai, os, json, tempfile
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
@@ -13,25 +13,28 @@ def index():
 def chatgpt_proxy():
     app.logger.info("Received POST request")
     
-    # 音声ファイルの取得
+    # 音声ファイル取得
     audio_file = request.files.get("audio")
     if audio_file is None:
         app.logger.error("No audio file provided")
         return jsonify({"error": "No audio file provided"}), 400
-    else:
-        app.logger.info(f"Received audio file: {audio_file.filename}")
 
-    # フォームデータ取得
     system_prompt = request.form.get("noa_system_prompt", "")
     messages_json = request.form.get("messages", "[]")
 
-    app.logger.info(f"System Prompt: {system_prompt}")
-    app.logger.info(f"Messages JSON: {messages_json}")
-
-    # Whisperで音声からテキストに変換
+    # 音声ファイルを一時ファイルに保存（Whisper API用）
     try:
-        transcript = openai.Audio.transcribe("whisper-1", audio_file)
-        user_text = transcript["text"] if isinstance(transcript, dict) else transcript
+        with tempfile.NamedTemporaryFile(suffix=".wav") as temp_audio:
+            audio_file.save(temp_audio.name)
+            temp_audio.seek(0)
+            
+            transcript = openai.Audio.transcribe(
+                model="whisper-1",
+                file=open(temp_audio.name, "rb"),
+                response_format="text"
+            )
+            
+        user_text = transcript
         app.logger.info(f"Whisper transcript: {user_text}")
     except Exception as e:
         app.logger.exception(f"Whisper API error: {e}")
@@ -60,7 +63,15 @@ def chatgpt_proxy():
         app.logger.exception(f"OpenAI API error: {e}")
         return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
-    return jsonify({"reply": answer_text})
+    # Noaが要求する形式で返却
+    response = {
+        "reply": answer_text,
+        "topic_changed": False,
+        "display_text": answer_text,
+        "reply_audio": None
+    }
+
+    return jsonify(response)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
