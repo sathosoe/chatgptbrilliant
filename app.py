@@ -13,7 +13,6 @@ def index():
 def chatgpt_proxy():
     app.logger.info("Received POST request")
     
-    # 音声ファイル取得
     audio_file = request.files.get("audio")
     if audio_file is None:
         app.logger.error("No audio file provided")
@@ -22,19 +21,21 @@ def chatgpt_proxy():
     system_prompt = request.form.get("noa_system_prompt", "")
     messages_json = request.form.get("messages", "[]")
 
-    # 音声ファイルを一時ファイルに保存（Whisper API用）
+    app.logger.info(f"System Prompt: {system_prompt}")
+    app.logger.info(f"Messages JSON: {messages_json}")
+
+    # Whisper用に一時ファイルとして音声を保存
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav") as temp_audio:
             audio_file.save(temp_audio.name)
             temp_audio.seek(0)
             
+            # openai==0.28を使用しているため、この形式で呼び出す
             transcript = openai.Audio.transcribe(
                 model="whisper-1",
-                file=open(temp_audio.name, "rb"),
-                response_format="text"
+                file=open(temp_audio.name, "rb")
             )
-            
-        user_text = transcript
+        user_text = transcript["text"] if isinstance(transcript, dict) else transcript
         app.logger.info(f"Whisper transcript: {user_text}")
     except Exception as e:
         app.logger.exception(f"Whisper API error: {e}")
@@ -63,7 +64,7 @@ def chatgpt_proxy():
         app.logger.exception(f"OpenAI API error: {e}")
         return jsonify({"error": f"OpenAI API error: {str(e)}"}), 500
 
-    # Noaが要求する形式で返却
+    # Noaアプリに適したレスポンスを返す
     response = {
         "reply": answer_text,
         "topic_changed": False,
