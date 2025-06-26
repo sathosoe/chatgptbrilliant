@@ -2,28 +2,29 @@
 """
 Frame ✕ Noa ✕ OpenAI 連携用サーバ
   1. Noa から multipart/form-data で audio / messages / noa_system_prompt が届く
-  2. 必要に応じ ffmpeg で 16 kHz mono WAV へ変換
-  3. Whisper (whisper‑1 / gpt‑4o‑transcribe 等) で文字起こし
-  4. ChatGPT (gpt‑4 など) で応答生成
-  5. JSON を返却 (Frame SDK が期待するキー:
-        reply / display_text / reply_audio / topic_changed)
+  2. 必要に応じ ffmpeg で 16 kHz mono WAV へ変換
+  3. Whisper (whisper-1 / gpt-4o-transcribe 等) で文字起こし
+  4. ChatGPT (gpt-4 など) で応答生成
+  5. JSON を返却 (Noaアプリが期待するキャメルケースのキー)
 """
 import json, os, subprocess, tempfile, logging
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
 # ---------- OpenAI 初期化 ----------
-client = OpenAI()                         # OPENAI_API_KEY は環境変数で読む
+client = OpenAI()                      # OPENAI_API_KEY は環境変数で読む
 
 # ---------- Flask ----------
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
+# 【推奨】jsonify が日本語を ASCII エスケープしないように設定
+app.config = False
 
-@app.route("/", methods=["GET"])
+@app.route("/", methods=)
 def healthcheck():
     return "OK"
 
-@app.route("/", methods=["POST"])
+@app.route("/", methods=)
 def noa_proxy():
     log = app.logger
     log.info("=== New request ===")
@@ -34,7 +35,7 @@ def noa_proxy():
         return jsonify(error="No audio field"), 400
 
     system_prompt = request.form.get("noa_system_prompt", "")
-    history_json  = request.form.get("messages", "[]")
+    history_json  = request.form.get("messages", "")
 
     # 2) 一時ファイル保存 & ffmpeg ------------------------------------------
     with tempfile.NamedTemporaryFile(suffix=".input", delete=False) as src:
@@ -69,7 +70,7 @@ def noa_proxy():
         os.unlink(src.name); os.unlink(dst.name)   # ゴミ掃除
 
     # 4) ChatGPT -----------------------------------------------------------
-    messages = []
+    messages =
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
 
@@ -87,27 +88,24 @@ def noa_proxy():
             model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
             messages=messages
         )
-        # --- ChatGPT 応答を得たあと ---------------------------------------
-        answer = chat_resp.choices[0].message.content.strip()
+        answer = chat_resp.choices.message.content.strip()
         log.info("Answer: %s", answer[:120])
     except Exception as e:
         log.exception("ChatCompletion error")
         return jsonify(error=f"Chat API: {e}"), 500
 
-    # 5) Frame 形式で返却（スネークケース 4 キー + Content-Type 明示） ------
+    # 5) Frame/Noa 形式で返却 ------------------------------------------------
+    # 【修正点】JSONのキーをNoaアプリが期待するキャメルケースに変更
     response_body = {
-        "reply":          answer,
-        "display_text":   answer,
-        "reply_audio":    None,       # TTS を付ける場合は URL か base64
-        "topic_changed":  False
+        "reply":        answer,
+        "displayText":  answer,
+        "replyAudio":   "",       # Noneではなく空文字列を返す
+        "topicChanged": False
     }
-    log.info("Returning JSON: %s", response_body)
+    log.info("Returning JSON for Noa: %s", response_body)
 
-    return (
-        json.dumps(response_body, ensure_ascii=False),
-        200,
-        {"Content-Type": "application/json"}
-    )
+    # 【修正点】Flask推奨の jsonify() を使用してレスポンスを生成
+    return jsonify(response_body)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
