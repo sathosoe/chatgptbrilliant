@@ -2,21 +2,23 @@
 """
 Frame ✕ Noa ✕ OpenAI 連携用サーバ
   1. Noa から multipart/form-data で audio / messages / noa_system_prompt が届く
-  2. 必要に応じ ffmpeg で 16 kHz mono WAV へ変換
-  3. Whisper (whisper‑1 または gpt‑4o‑transcribe) で文字起こし
-  4. ChatGPT (gpt‑4 など) で応答生成
-  5. JSON を返却 (Frame SDK が期待するキー: reply / displayText / replyAudio / topicChanged)
+  2. 必要に応じ ffmpeg で 16 kHz mono WAV へ変換
+  3. Whisper (whisper-1 または gpt-4o-transcribe) で文字起こし
+  4. ChatGPT (gpt-4 など) で応答生成
+  5. JSON を返却 (Frame SDK が期待するスネークケースのキー: reply / display_text / reply_audio / topic_changed)
 """
 import json, os, subprocess, tempfile, logging
 from flask import Flask, request, jsonify
 from openai import OpenAI
 
 # ---------- OpenAI 初期化 ----------
-client = OpenAI()                         # OPENAI_API_KEY は環境変数で読む
+client = OpenAI()                      # OPENAI_API_KEY は環境変数で読む
 
 # ---------- Flask ----------
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
+# jsonify が日本語を ASCII エスケープしないように設定
+app.config['JSON_AS_ASCII'] = False
 
 @app.route("/", methods=["GET"])
 def healthcheck():
@@ -30,6 +32,8 @@ def noa_proxy():
     # 1) 受信 ---------------------------------------------------------------
     audio_file = request.files.get("audio")
     if audio_file is None:
+        # Noaアプリはエラーメッセージを画面に表示しないため、エラー内容はログで確認します
+        log.error("Request does not contain audio file part")
         return jsonify(error="No audio field"), 400
 
     system_prompt = request.form.get("noa_system_prompt", "")
@@ -65,7 +69,7 @@ def noa_proxy():
         log.exception("Whisper API error")
         return jsonify(error=f"Whisper API: {e}"), 500
     finally:
-        os.unlink(src.name); os.unlink(dst.name)   # ゴミ掃除
+        os.unlink(src.name); os.unlink(dst.name)  # ゴミ掃除
 
     # 4) ChatGPT -----------------------------------------------------------
     messages = []
@@ -93,20 +97,19 @@ def noa_proxy():
         log.exception("ChatCompletion error")
         return jsonify(error=f"Chat API: {e}"), 500
 
-    # 5) Frame 形式で返却（キャメルケース 4 キー + Content-Type 固定） ------
+    # 5) Frame 形式で返却（スネークケースのキー） ------
+    # 【修正点】指摘に基づき、JSONのキーをスネークケースに変更
     response_body = {
         "reply": answer,
-        "displayText": answer,
-        "replyAudio": None,    # TTS を付ける場合は URL か base64 をここに
-        "topicChanged": False
+        "display_text": answer,
+        "reply_audio": None,    # TTS を付ける場合は URL か base64 をここに
+        "topic_changed": False
     }
     log.info("Returning JSON: %s", response_body)
 
-    return (
-        json.dumps(response_body, ensure_ascii=False),
-        200,
-        {"Content-Type": "application/json"}
-    )
+    # 【修正点】指摘に基づき、jsonify を使用してレスポンスを生成。
+    # これにより "Content-Type: application/json" ヘッダが自動的に付与される。
+    return jsonify(response_body)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
